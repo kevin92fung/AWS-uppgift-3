@@ -1,0 +1,108 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Resources:
+
+  # IAM Role for CodePipeline
+  CodePipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: CodePipelineRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codepipeline.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CodePipelinePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # S3 Permissions for your artifact store (change bucket name)
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:GetBucketVersioning
+                  - s3:PutBucketAcl
+                Resource:
+                  - arn:aws:s3:::testkf0101  # Change this to your new bucket name
+                  - arn:aws:s3:::testkf0101/*  # Ensure the new bucket's objects are referenced
+              
+              # Permissions for CodeBuild (can be customized if necessary)
+              - Effect: Allow
+                Action:
+                  - codebuild:StartBuild
+                  - codebuild:BatchGetBuilds
+                Resource: '*'  # Typically kept as * unless you have a specific CodeBuild project in mind
+
+              # Permissions to use GitHub connection (correct reference to GitHub connection)
+              - Effect: Allow
+                Action:
+                  - codestar-connections:UseConnection
+                Resource: !Ref GitHubConnection  # Make sure this is correctly referencing your GitHub connection ARN
+
+              # Allow CodePipeline to pass IAM roles to CodeBuild (can be restricted further if needed)
+              - Effect: Allow
+                Action: iam:PassRole
+                Resource: '*'  # Adjust if you want to restrict to specific roles
+
+  # Create a CodeStar connection to GitHub
+  GitHubConnection:
+    Type: AWS::CodeStarConnections::Connection
+    Properties:
+      # The name of your connection (can be renamed to something meaningful)
+      ConnectionName: GitHubConnectionToMyRepo  # Change this name for a different connection
+      ProviderType: GitHub  # This remains 'GitHub' if you're using GitHub as the provider
+
+  # CodePipeline Resource
+  MyCodePipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: MyPipeline  # Pipeline name, adjust if creating a new pipeline
+      RoleArn: !GetAtt CodePipelineRole.Arn  # Role ARN for CodePipeline, using the IAM role above
+
+      # Artifact store - specify your S3 bucket name for artifact storage
+      ArtifactStore:
+        Type: S3
+        Location: testkf0101  # Change this to the name of your new S3 bucket for pipeline artifacts
+
+      # Pipeline stages (source and build)
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: GitHubSource
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeStarSourceConnection  # Uses CodeStar for GitHub connections
+                Version: 1
+              OutputArtifacts:
+                - Name: SourceOutput
+              Configuration:
+                # Reference the GitHub connection ARN (created above)
+                ConnectionArn: !Ref GitHubConnection  # Ensure this is correctly referencing the connection ARN
+                # Update the full repository ID to match the new GitHub repo
+                FullRepositoryId: kevin92fung/ContactForm  # Change this to your new GitHub repo (e.g., owner/repo)
+                # Update to the branch you want to use in the new repo
+                BranchName: main  # Change to the branch you want to pull from (e.g., main or another branch)
+
+        - Name: Build
+          Actions:
+            - Name: CodeBuild
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: 1
+              InputArtifacts:
+                - Name: SourceOutput
+              OutputArtifacts:
+                - Name: BuildOutput
+              Configuration:
+                # Make sure the build project name corresponds to an actual CodeBuild project
+                ProjectName: MyCodeBuildProject  # Update this to the name of your CodeBuild project
+
+
+
+############# måste manuellt skapa en connection till github via aws console #####################
