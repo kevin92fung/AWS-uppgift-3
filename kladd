@@ -1,0 +1,7 @@
+
+  # Custom resource to invoke GitHub upload Lambda function
+  InvokeGitHubUpload:
+    Type: AWS::CloudFormation::CustomResource
+    DependsOn: GitHubUploadLambdaFunction
+    Properties:
+      ServiceToken: !GetAtt GitHubUploadLambdaFunction.Arn

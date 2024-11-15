@@ -1,39 +1,21 @@
 AWSTemplateFormatVersion: 2010-09-09
-Description: Contact Form Serverless solution
+Description: Contact Form Serverless solution, using S3, API Gateway, Lambda, and DynamoDB. Verify Email with SES and finalize the Github connection.
 
 Parameters:
   FromEmail:
     Type: String
+    NoEcho: true
     Description: "The email address to send from (must be verified in SES)."
 
   ToEmail:
     Type: String
+    NoEcho: true
     Description: "The recipient email address (must be verified in SES)."
 
-
-
-
-
-  GitHubRepoOwner:
+  GitHubRepositoryId:
     Type: String
-    Description: "GitHub repository owner (e.g., username or organization name)"
-    
-  GitHubRepoName:
-    Type: String
-    Description: "GitHub repository name"
-
-  GitHubBranch:
-    Type: String
-    Default: "main"  # Default branch name
-    Description: "GitHub branch name (e.g., 'main')"
-
-  GitHubToken:
-    Type: AWS::SecretsManager::SecretId
-    Description: "GitHub personal access token stored in AWS Secrets Manager"
-
-
-
-
+    NoEcho: true
+    Description: "The full repository ID for GitHub, e.g., 'username/repo'."
 
 Resources:
   # DynamoDB Table
@@ -304,6 +286,11 @@ Resources:
       Runtime: python3.12
       Role: !GetAtt LambdaRoleToAccessSES.Arn
       Handler: index.lambda_handler
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref AddContactsTable  # Reference DynamoDB table from CloudFormation
+          FROM_EMAIL: !Ref MyEmailIdentity1  # Reference the verified sender email identity
+          TO_EMAIL: !Ref MyEmailIdentity2  # Reference the recipient email identity
       Code:
         ZipFile: |
           import json
@@ -387,12 +374,6 @@ Resources:
                   'body': json.dumps('Successfully sent email from Lambda using Amazon SES')
               }
 
-      Environment:
-        Variables:
-          TABLE_NAME: !Ref AddContactsTable  # Reference DynamoDB table from CloudFormation
-          FROM_EMAIL: !Ref MyEmailIdentity1  # Reference the verified sender email identity
-          TO_EMAIL: !Ref MyEmailIdentity2  # Reference the recipient email identity
-
   # Enable SendContactInfoEmailFunction to be triggered by DynamoDB stream
   SendContactInfoEmailFunctionDynamoDBTrigger:
     Type: AWS::Lambda::EventSourceMapping
@@ -431,7 +412,46 @@ Resources:
             Action: "s3:GetObject"
             Resource: 
               - !Sub "${ContactFormBucket.Arn}/*"  
-  
+
+  # CloudFront Distribution with S3 as origin
+  ContactFormCloudFront:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Origins:
+          - Id: 'S3Origin'
+            DomainName: !GetAtt ContactFormBucket.DomainName
+            S3OriginConfig: {}
+        Enabled: true
+        DefaultRootObject: 'index.html'  # Specify your default file
+        DefaultCacheBehavior:
+          TargetOriginId: 'S3Origin'
+          ViewerProtocolPolicy: 'redirect-to-https'
+          AllowedMethods:
+            - 'GET'
+            - 'HEAD'
+          ForwardedValues:
+            QueryString: 'false'
+            Cookies:
+              Forward: 'none'
+        PriceClass: 'PriceClass_100'  # Adjust based on your needs
+        ViewerCertificate:
+          CloudFrontDefaultCertificate: 'true'
+
+  # S3 Bucket Policy to allow CloudFront access
+  S3BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ContactFormBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: 'Allow'
+            Principal:
+              AWS: '*'
+            Action: 's3:GetObject'
+            Resource: !Sub 'arn:aws:s3:::contact-form-bucket-${AWS::AccountId}-${AWS::Region}-${AWS::StackName}/*'
+
   # IAM Role for Lambda Function to Access S3
   LambdaS3UploadRole:
     Type: AWS::IAM::Role
@@ -470,6 +490,12 @@ Resources:
       Handler: index.lambda_handler
       Role: !GetAtt LambdaS3UploadRole.Arn
       Runtime: python3.13
+      Environment:
+        Variables:
+          BUCKET_NAME: !Ref ContactFormBucket
+          API_ID: !Ref ApiGatewayRestApi
+          API_REGION: !Ref "AWS::Region"
+          API_STAGE: "default"
       Code:
         ZipFile: |
           import boto3
@@ -597,14 +623,6 @@ Resources:
                   # Send a failure response to CloudFormation
                   send_response(event, context, 'FAILED', {'Message': str(e)})
 
-      Environment:
-        Variables:
-          BUCKET_NAME: !Ref ContactFormBucket
-          API_ID: !Ref ApiGatewayRestApi
-          API_REGION: !Ref "AWS::Region"
-          API_STAGE: "default"
-
-
   # Custom resource to invoke Lambda function
   InvokeHtmlUpload:
     Type: AWS::CloudFormation::CustomResource
@@ -616,109 +634,135 @@ Resources:
 
 
 
-
-
-
-
-  # Lambda function to upload HTML file from S3 to GitHub
-  GitHubUploadLambdaFunction:
-    Type: AWS::Lambda::Function
-    DependsOn:
-      - S3UploadLambdaFunction
+  # Create a CodeStar connection to GitHub
+  GitHubConnection:
+    Type: AWS::CodeStarConnections::Connection
     Properties:
-      FunctionName: UploadHtmlToGitHubFunction
-      Handler: index.lambda_handler
-      Role: !GetAtt LambdaS3UploadRole.Arn
-      Runtime: python3.13
-      Code:
-        ZipFile: |
-          import boto3
-          import json
-          import os
-          import base64
-          import requests
-          import urllib.request
+      ConnectionName: GitHubConnectionToMyRepo
+      ProviderType: GitHub
 
-          s3_client = boto3.client('s3')
-          ssm_client = boto3.client('ssm')
-
-          # Function to send response to CloudFormation
-          def send_response(event, context, status, response_data):
-              response_url = event['ResponseURL']
-              response_body = json.dumps({
-                  'Status': status,
-                  'Reason': 'See the details in CloudWatch Log Stream: ' + context.log_stream_name,
-                  'PhysicalResourceId': context.log_stream_name,
-                  'StackId': event['StackId'],
-                  'RequestId': event['RequestId'],
-                  'LogicalResourceId': event['LogicalResourceId'],
-                  'Data': response_data
-              })
-              headers = {'content-type': '', 'content-length': str(len(response_body))}
-              request = urllib.request.Request(
-                  response_url,
-                  data=response_body.encode('utf-8'),
-                  headers=headers,
-                  method='PUT'
-              )
-              urllib.request.urlopen(request)
-
-          def lambda_handler(event, context):
-              print("Received event:", json.dumps(event))
-              bucket_name = os.environ['BUCKET_NAME']
-              github_repo_owner = os.environ['GITHUB_REPO_OWNER']
-              github_repo_name = os.environ['GITHUB_REPO_NAME']
-              github_branch = os.environ['GITHUB_BRANCH']
-              
-              # Get GitHub Token from SSM Parameter Store
-              github_token_param = os.environ['GITHUB_TOKEN']
-              github_token = ssm_client.get_parameter(Name=github_token_param, WithDecryption=True)['Parameter']['Value']
-
-              try:
-                  # Fetch HTML content from S3
-                  response = s3_client.get_object(Bucket=bucket_name, Key='index.html')
-                  html_content = response['Body'].read().decode('utf-8')
-
-                  # Prepare GitHub API request
-                  url = f"https://api.github.com/repos/{github_repo_owner}/{github_repo_name}/contents/index.html"
-                  headers = {
-                      "Authorization": f"token {github_token}",
-                      "Content-Type": "application/json"
-                  }
-
-                  content_base64 = base64.b64encode(html_content.encode("utf-8")).decode("utf-8")
-                  payload = {
-                      "message": "Upload contact form HTML via Lambda",
-                      "content": content_base64,
-                      "branch": github_branch
-                  }
-
-                  # Send request to GitHub API
-                  response = requests.put(url, headers=headers, json=payload)
-                  if response.status_code == 201:
-                      print("File uploaded to GitHub successfully.")
-                      send_response(event, context, 'SUCCESS', {'Message': 'File uploaded to GitHub'})
-                  else:
-                      error_message = response.json().get('message', 'Unknown error')
-                      print("Failed to upload file to GitHub:", error_message)
-                      send_response(event, context, 'FAILED', {'Message': error_message})
-
-              except Exception as e:
-                  print(f"Error uploading file to GitHub: {e}")
-                  send_response(event, context, 'FAILED', {'Message': str(e)})
-
-      Environment:
-        Variables:
-          BUCKET_NAME: !Ref ContactFormBucket
-          GITHUB_REPO_OWNER: !Ref GitHubRepoOwner
-          GITHUB_REPO_NAME: !Ref GitHubRepoName
-          GITHUB_BRANCH: !Ref GitHubBranch
-          GITHUB_TOKEN: !Ref GitHubToken
-
-  # Custom resource to invoke GitHub upload Lambda function
-  InvokeGitHubUpload:
-    Type: AWS::CloudFormation::CustomResource
-    DependsOn:
-      - InvokeS3Upload
+  # Create an S3 bucket for storing artifacts
+  MyArtifactBucket:
+    Type: AWS::S3::Bucket
     Properties:
-      ServiceToken: !GetAtt GitHubUploadLambdaFunction.Arn
+      BucketName: !Sub 'artifact-bucket-${AWS::AccountId}-${AWS::Region}-${AWS::StackName}'
+
+  # IAM Role for CodePipeline and CodeBuild
+  CodePipelineAndBuildRole:
+    Type: AWS::IAM::Role
+    DependsOn:
+      - MyArtifactBucket
+      - ContactFormBucket
+    Properties:
+      RoleName: CodePipelineAndBuildRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - codepipeline.amazonaws.com
+                - codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CodePipelineAndBuildPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # Permissions for CodePipeline to interact with S3 and GitHub
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:GetBucketVersioning
+                  - s3:PutBucketAcl
+                  - codestar-connections:UseConnection
+                Resource:
+                  - !GetAtt MyArtifactBucket.Arn
+                  - !Sub "${MyArtifactBucket.Arn}/*"
+                  - !Sub "${ContactFormBucket.Arn}/*"
+                  - !Ref GitHubConnection  # GitHub connection resource
+
+              # Permissions for CodeBuild to interact with S3 and start builds
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:ListBucket
+                  - codebuild:StartBuild
+                  - codebuild:BatchGetBuilds
+                Resource:
+                  - !GetAtt MyArtifactBucket.Arn
+                  - !Sub "${MyArtifactBucket.Arn}/*"
+                  - !GetAtt ContactFormBucket.Arn
+                  - !Sub "${ContactFormBucket.Arn}/*"
+
+              # Permissions for CodeBuild to create CloudWatch log streams and log events
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  # CodeBuild log groups and streams using GetAtt and Sub
+                  - !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/*:log-stream:*  # Allow CodeBuild to create log streams for any project
+
+              # Permissions for CodePipeline to create CloudWatch log groups, log streams, and log events
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
+
+              # Permissions to allow CodePipeline to pass IAM roles
+              - Effect: Allow
+                Action: iam:PassRole
+                Resource: '*'  # Allow passing any IAM role (can be restricted to specific roles)
+
+  # CodePipeline Resource
+  MyCodePipeline:
+    Type: AWS::CodePipeline::Pipeline
+    DependsOn:
+      - CodePipelineAndBuildRole
+      - MyArtifactBucket
+      - GitHubConnection
+      - ContactFormBucket
+    Properties:
+      Name: MyPipeline
+      RoleArn: !GetAtt CodePipelineAndBuildRole.Arn
+
+      # Artifact store
+      ArtifactStore:
+        Type: S3
+        Location: !Ref MyArtifactBucket
+
+      # Pipeline stages (source, build, and deploy)
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: GitHubSource
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeStarSourceConnection
+                Version: 1
+              OutputArtifacts:
+                - Name: SourceOutput
+              Configuration:
+                ConnectionArn: !Ref GitHubConnection
+                FullRepositoryId: !Ref GitHubRepositoryId
+                BranchName: main
+
+        - Name: Deploy
+          Actions:
+            - Name: S3Deploy
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: S3
+                Version: 1
+              InputArtifacts:
+                - Name: SourceOutput
+              Configuration:
+                BucketName: !Ref ContactFormBucket
+                Extract: 'true'
