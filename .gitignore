@@ -1,2 +1,2 @@
-#test to ignore
-deploy.sh
+#ignore .env
+.env
