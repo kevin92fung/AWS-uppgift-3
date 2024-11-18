@@ -33,7 +33,7 @@ För att kunna genomföra detta projekt behöver du:
 3. Ge repositoryt ett namn (t.ex. `aws-contact-form`) och välj om det ska vara publikt eller privat.
 4. Klicka på **Create repository** för att slutföra.
 
-
+[⬆️ Till toppen](#top)
 
 
 
@@ -62,7 +62,7 @@ TO_EMAIL=<mail@example2.com>
 GITHUB_REPOSITORY_ID=<username/repository>
 ```
 
-
+[⬆️ Till toppen](#top)
 
 
 
@@ -91,7 +91,7 @@ Resources:
   # Här kommer dina AWS-resurser att definieras, exempelvis S3-bucket, Lambda, API Gateway, osv.
 ```
 
-
+[⬆️ Till toppen](#top)
 
 
 
@@ -134,6 +134,7 @@ aws cloudformation deploy \
 ./deploy.sh
 ```
 
+[⬆️ Till toppen](#top)
 
 
 
@@ -189,7 +190,7 @@ Efter att ha uppdaterat `cloudformation.yaml`, kör deploy-skriptet:
 2. Klicka på **Tables**.
 3. Verifiera att tabellen `Contacts` finns och att den har rätt inställningar, med `timestamp` som partition key och strömmar aktiverade för att fånga både gamla och nya bilder av data.
 
-
+[⬆️ Till toppen](#top)
 
 
 
@@ -340,7 +341,7 @@ aws cloudformation deploy \
 2. Navigera till **IAM** under **Services**.
 3. Klicka på **Roles** och verifiera att rollerna **LambdaRoleToAccessSES** och **LambdaRoleToAccessDynamoDB** finns och har rätt policyer tilldelade.
 
-
+[⬆️ Till toppen](#top)
 
 
 
@@ -425,7 +426,7 @@ aws cloudformation deploy \
 
 Efter verifiering kommer du kunna skicka och ta emot e-post via SES med de angivna e-postadresserna.
 
-
+[⬆️ Till toppen](#top)
 
 
 
@@ -537,7 +538,7 @@ Resources:
 
 8. Gå till **DynamoDB** i AWS Console och kontrollera att den nya posten har lagts till i tabellen **Contacts** med rätt `name`, `email` och `message`.
 
-
+[⬆️ Till toppen](#top)
 
 
 
@@ -667,5 +668,153 @@ Resources:
 8. Kontrollera **Response Body** för att säkerställa att du får en framgångsrik statuskod (200 OK) och att API:t svarar med ett meddelande om att informationen har sparats korrekt.
 9. Gå till **DynamoDB** och öppna tabellen **Contacts**.
 10. Verifiera att ett nytt objekt har lagts till med de värden du skickade i POST-förfrågan: `name`, `email`, `message`, samt en `timestamp`.
+
+[⬆️ Till toppen](#top)
+
+
+
+
+
+
+
+
+## Steg 10: Lägg till Lambda-funktion för att skicka e-postmeddelande med kontaktinformation
+
+I det här steget kommer vi att skapa en Lambda-funktion som hämtar kontaktinformation från DynamoDB och skickar ett e-postmeddelande via SES (Simple Email Service) med informationen.
+
+### Lägg till kod i `cloudformation.yaml`:
+
+```yaml
+Resources:
+  # SendContactInfoEmail Function
+  SendContactInfoEmailFunction:
+    Type: AWS::Lambda::Function
+    DependsOn:
+      - LambdaRoleToAccessSES
+      - AddContactsTable
+      - MyEmailIdentity1
+      - MyEmailIdentity2
+    Properties:
+      FunctionName: SendContactInfoEmail
+      Runtime: python3.12
+      Role: !GetAtt LambdaRoleToAccessSES.Arn
+      Handler: index.lambda_handler
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref AddContactsTable  # Reference DynamoDB table from CloudFormation
+          FROM_EMAIL: !Ref MyEmailIdentity1  # Reference the verified sender email identity
+          TO_EMAIL: !Ref MyEmailIdentity2  # Reference the recipient email identity
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import os
+          from datetime import datetime
+
+          # Initialize the DynamoDB client
+          dynamodb = boto3.resource('dynamodb')
+          table = dynamodb.Table(os.environ['TABLE_NAME'])  # Get the table name from environment variable
+
+          def lambda_handler(event, context):
+              # Scan the DynamoDB table
+              result = table.scan()
+              items = result['Items']
+
+              # Sort the items by timestamp in descending order
+              # Ensure 'timestamp' is parsed into a datetime object for proper comparison
+              items.sort(key=lambda x: datetime.strptime(x['timestamp'], '%Y-%m-%d %H:%M:%S'), reverse=True)
+
+              # Initialize SES client (uses Lambda's region by default)
+              ses = boto3.client('ses')
+
+              # Build the HTML table body for the email
+              body = """
+              <html>
+              <head></head>
+              <body>
+              <h3>Contact Information</h3>
+              <table border="1">
+                  <tr>
+                      <th>Name</th>
+                      <th>Email</th>
+                      <th>Message</th>
+                      <th>Timestamp</th>
+                  </tr>
+              """
+              
+              # Loop through the items and create table rows
+              for item in items:
+                  body += f"""
+                  <tr>
+                      <td>{item['name']}</td>
+                      <td>{item['email']}</td>
+                      <td>{item['message']}</td>
+                      <td>{item['timestamp']}</td>
+                  </tr>
+                  """
+              
+              # Closing HTML tags
+              body += """
+              </table>
+              </body>
+              </html>
+              """
+
+              # Send email using SES
+              ses.send_email(
+                  Source=os.environ['FROM_EMAIL'],  # Reference the environment variable for the sender email
+                  Destination={ 
+                      'ToAddresses': [
+                          os.environ['TO_EMAIL']  # Reference the environment variable for the recipient email
+                      ]
+                  },
+                  Message={
+                      'Subject': {
+                          'Data': 'Contact Info Notification',
+                          'Charset': 'UTF-8'
+                      },
+                      'Body': {
+                          'Html': {  # Specify that we're sending HTML content
+                              'Data': body,
+                              'Charset': 'UTF-8'
+                          }
+                      }
+                  }
+              )
+
+              return {
+                  'statusCode': 200,
+                  'body': json.dumps('Successfully sent email from Lambda using Amazon SES')
+              }
+```
+
+### Förklaring:
+
+- **Lambda-funktionen**: Den här funktionen hämtar kontaktinformation från DynamoDB, sorterar den efter timestamp och skickar informationen i ett HTML-formaterat e-postmeddelande via SES.
+- **DynamoDB och SES**: Funktionen använder DynamoDB för att hämta kontaktuppgifter och SES för att skicka e-postmeddelandet.
+- **Miljövariabler**: `TABLE_NAME` refererar till DynamoDB-tabellen som lagrar kontaktuppgifterna. `FROM_EMAIL` och `TO_EMAIL` är e-postadresser som refereras till via verifierade e-postidentiteter i SES.
+
+### Kör:
+
+1. Lägg till koden i din `cloudformation.yaml`-fil.
+2. Kör deploy-skriptet:
+
+   ```bash
+   ./deploy.sh
+   ```
+
+### Verifiera:
+
+1. Gå till **AWS Console** och navigera till **Lambda**.
+2. Kontrollera att Lambda-funktionen **SendContactInfoEmail** har skapats.
+3. Kontrollera att miljövariablerna `TABLE_NAME`, `FROM_EMAIL` och `TO_EMAIL` är korrekt inställda.
+4. Testa funktionen genom att manuellt utlösa den i Lambda-konsolen eller genom att skicka en begäran till API Gateway som triggar Lambda-funktionen. Kontrollera att e-postmeddelandet skickas till den angivna mottagaren och att det innehåller kontaktinformationen från DynamoDB.
+
+[⬆️ Till toppen](#top)
+
+
+
+
+
 
 
