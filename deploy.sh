@@ -4,8 +4,8 @@
 source .env
 
 # Set variables for the template file and stack name
-TEMPLATE_FILE="cf.yaml"  # Change this to the path of your CloudFormation template file
-STACK_NAME="glenn"  # Change this to your stack name
+TEMPLATE_FILE="CloudFormation.yaml"  # Change this to the path of your CloudFormation template file
+STACK_NAME="uppgift3"  # Change this to your stack name
 
 # Deploy the CloudFormation stack using the loaded environment variables
 aws cloudformation deploy \

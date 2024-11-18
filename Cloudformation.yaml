@@ -1,6 +1,10 @@
 AWSTemplateFormatVersion: 2010-09-09
-Description: Contact Form Serverless solution, using S3, API Gateway, Lambda, and DynamoDB. Verify Email with SES and finalize the Github connection.
-
+Description: |
+  This CloudFormation template provisions a serverless environment 
+  for a contact form that sends confirmation emails to the responsible person.
+  The website is hosted on an S3 bucket and accessed by users through CloudFront.
+  The solution leverages multiple Lambda functions for backend processing,
+  with GitHub integration and CodePipeline to manage website updates.
 Parameters:
   FromEmail:
     Type: String
@@ -191,7 +195,6 @@ Resources:
       Environment:
         Variables:
           TABLE_NAME: !Ref AddContactsTable
-
 
   # API Gateway to integrate with Lambda function
   ApiGatewayRestApi:
@@ -633,8 +636,6 @@ Resources:
     Properties:
       ServiceToken: !GetAtt S3LambdaFunction.Arn
 
-
-
   # Create a CodeStar connection to GitHub
   GitHubConnection:
     Type: AWS::CodeStarConnections::Connection
@@ -648,14 +649,10 @@ Resources:
     Properties:
       BucketName: !Sub 'artifact-bucket-${AWS::AccountId}-${AWS::Region}-${AWS::StackName}'
 
-  # IAM Role for CodePipeline and CodeBuild
-  CodePipelineAndBuildRole:
+  # Combined IAM Role for CodePipeline and Lambda (using the name CodePipelineRole)
+  CodePipelineRole:
     Type: AWS::IAM::Role
-    DependsOn:
-      - MyArtifactBucket
-      - ContactFormBucket
     Properties:
-      RoleName: CodePipelineAndBuildRole
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -664,9 +661,10 @@ Resources:
               Service:
                 - codepipeline.amazonaws.com
                 - codebuild.amazonaws.com
+                - lambda.amazonaws.com
             Action: sts:AssumeRole
       Policies:
-        - PolicyName: CodePipelineAndBuildPolicy
+        - PolicyName: CombinedCodePipelinePolicy
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
@@ -697,17 +695,105 @@ Resources:
                 Action: iam:PassRole
                 Resource: '*'  # Allow passing any IAM role (can be restricted to specific roles)
 
+              # Permissions for Lambda to invoke CloudFront invalidation
+              - Effect: Allow
+                Action:
+                  - cloudfront:CreateInvalidation
+                  - lambda:InvokeFunction
+                Resource: "*"  # Adjust to a specific CloudFront distribution ARN if possible
+
+              # **New Permissions for CodePipeline Job Status Update**
+              - Effect: Allow
+                Action:
+                  - codepipeline:PutJobSuccessResult
+                  - codepipeline:PutJobFailureResult
+                Resource: "*"  # Optionally, you can restrict this to specific pipelines if necessary
+
+  # Lambda Function for CloudFront Invalidation
+  CloudFrontInvalidationFunction:
+    Type: AWS::Lambda::Function
+    DependsOn:
+      - CodePipelineRole  # Ensure the CodePipelineRole is created first
+      - ContactFormCloudFront
+    Properties:
+      FunctionName: CloudFrontInvalidationFunction
+      Handler: index.lambda_handler
+      Runtime: python3.9
+      Role: !GetAtt CodePipelineRole.Arn  # Use CodePipelineRole here
+      Environment:
+        Variables:
+          DISTRIBUTION_ID: !Ref ContactFormCloudFront
+      Code:
+        ZipFile: |
+          import boto3
+          import os
+
+          cloudfront = boto3.client('cloudfront')
+          codepipeline = boto3.client('codepipeline')
+
+          def lambda_handler(event, context):
+              distribution_id = os.getenv('DISTRIBUTION_ID')
+              
+              # Extract jobId for the CodePipeline action
+              job_id = event['CodePipeline.job']['id']
+              
+              try:
+                  # Create CloudFront invalidation
+                  response = cloudfront.create_invalidation(
+                      DistributionId=distribution_id,
+                      InvalidationBatch={
+                          'Paths': {
+                              'Quantity': 1,
+                              'Items': ['/*']
+                          },
+                          'CallerReference': str(context.aws_request_id)
+                      }
+                  )
+                  
+                  print(f"Invalidation created: {response}")
+                  
+                  # Notify CodePipeline of successful completion
+                  codepipeline.put_job_success_result(jobId=job_id)
+                  
+                  return {
+                      'statusCode': 200,
+                      'body': {
+                          'status': 'Succeeded',
+                          'message': f"Invalidation created with ID: {response['Invalidation']['Id']}"
+                      }
+                  }
+              
+              except Exception as e:
+                  # Notify CodePipeline of failure
+                  print(f"Error: {str(e)}")
+                  codepipeline.put_job_failure_result(
+                      jobId=job_id,
+                      failureDetails={
+                          'message': str(e),
+                          'type': 'JobFailed'
+                      }
+                  )
+                  
+                  return {
+                      'statusCode': 500,
+                      'body': {
+                          'status': 'Failed',
+                          'message': f"Error during invalidation: {str(e)}"
+                      }
+                  }
+
   # CodePipeline Resource
   MyCodePipeline:
     Type: AWS::CodePipeline::Pipeline
     DependsOn:
-      - CodePipelineAndBuildRole
+      - CodePipelineRole
       - MyArtifactBucket
       - GitHubConnection
       - ContactFormBucket
+      - CloudFrontInvalidationFunction
     Properties:
       Name: MyPipeline
-      RoleArn: !GetAtt CodePipelineAndBuildRole.Arn
+      RoleArn: !GetAtt CodePipelineRole.Arn  # Use CodePipelineRole here
 
       # Artifact store
       ArtifactStore:
@@ -744,3 +830,18 @@ Resources:
               Configuration:
                 BucketName: !Ref ContactFormBucket
                 Extract: 'true'
+
+        - Name: InvalidateCache
+          Actions:
+            - Name: CloudFrontInvalidation
+              ActionTypeId:
+                Category: Invoke
+                Owner: AWS
+                Provider: Lambda
+                Version: 1
+              Configuration:
+                FunctionName: !Ref CloudFrontInvalidationFunction
+              RoleArn: !GetAtt CodePipelineRole.Arn  # Use CodePipelineRole here
+              RunOrder: 1
+              OutputArtifacts:  # Add this if you want to pass data between pipeline stages
+                - Name: InvalidationOutput
