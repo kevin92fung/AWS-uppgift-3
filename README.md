@@ -444,6 +444,8 @@ I det här steget kommer vi att skapa en Lambda-funktion som tar emot data från
 
 ```yaml
 Resources:
+  # Tidigare definierade resurser...
+
   # Lambda function to process the contact form submission
   AddContactInfoFunction:
     Type: AWS::Lambda::Function
@@ -557,6 +559,8 @@ I det här steget kommer vi att skapa en API Gateway som fungerar som en trigger
 
 ```yaml
 Resources:
+  # Tidigare definierade resurser...
+
   # API Gateway to integrate with Lambda function
   ApiGatewayRestApi:
     Type: AWS::ApiGateway::RestApi
@@ -686,6 +690,8 @@ I det här steget kommer vi att skapa en Lambda-funktion som hämtar kontaktinfo
 
 ```yaml
 Resources:
+  # Tidigare definierade resurser...
+
   # SendContactInfoEmail Function
   SendContactInfoEmailFunction:
     Type: AWS::Lambda::Function
@@ -818,3 +824,240 @@ Resources:
 
 
 
+
+
+## Steg 11: Lägg till trigger för SES-funktionen
+
+I det här steget kommer vi att lägga till en trigger för Lambda-funktionen som skickar e-postmeddelanden via SES. Triggern kommer att vara en DynamoDB Stream som aktiverar funktionen varje gång det läggs till en ny post i DynamoDB-tabellen.
+
+### Lägg till kod i `cloudformation.yaml`:
+
+```yaml
+Resources:
+  # Tidigare definierade resurser...
+
+  # Enable SendContactInfoEmailFunction to be triggered by DynamoDB stream
+  SendContactInfoEmailFunctionDynamoDBTrigger:
+    Type: AWS::Lambda::EventSourceMapping
+    DependsOn: SendContactInfoEmailFunction
+    Properties:
+      BatchSize: 100
+      EventSourceArn: !GetAtt AddContactsTable.StreamArn
+      FunctionName: !Ref SendContactInfoEmailFunction
+      StartingPosition: LATEST
+      Enabled: true
+      BisectBatchOnFunctionError: false 
+      TumblingWindowInSeconds: 0
+```
+
+### Förklaring:
+
+- **EventSourceMapping**: Skapar en trigger för Lambda-funktionen `SendContactInfoEmailFunction`, som nu triggas av händelser (nya poster) i DynamoDB-streamen för `AddContactsTable`.
+- **BatchSize**: Maximalt antal poster som skickas till funktionen på en gång.
+- **EventSourceArn**: Referens till DynamoDB-streamens ARN, som är kopplad till vår `AddContactsTable`.
+- **StartingPosition**: Anger att funktionen ska börja bearbeta nya poster från den senaste händelsen.
+- **BisectBatchOnFunctionError**: När satt till `false` behandlas hela batchen vid fel.
+- **TumblingWindowInSeconds**: Anger att batcherna ska skickas utan någon specifik tidsfönster.
+
+### Kör:
+
+1. Lägg till koden i din `cloudformation.yaml`-fil.
+2. Kör deploy-skriptet:
+
+   ```bash
+   ./deploy.sh
+   ```
+
+### Verifiera:
+
+1. Gå till **AWS Console** och navigera till **Lambda**.
+2. Kontrollera att triggern har skapats för **SendContactInfoEmailFunction**.
+3. Testa funktionaliteten genom att lägga till en ny post i DynamoDB via API Gateway.
+4. Kontrollera att e-postmeddelandet skickas via SES efter att posten har lagts till i DynamoDB och att det innehåller kontaktinformationen.
+
+### Test:
+
+För att testa detta:
+
+1. Gå till **API Gateway** i AWS Console.
+2. Navigera till den nya API som skapades för kontaktformuläret.
+3. Välj **Test** och välj **POST** som metod.
+4. Lägg till följande request body:
+
+   ```json
+   {
+     "name": "test",
+     "email": "test@email.com",
+     "msg": "testar så funktionen fungerar"
+   }
+   ```
+
+5. Kör testet och verifiera att e-postmeddelandet skickas via SES och att informationen visas korrekt i e-postmeddelandet.
+
+[⬆️ Till toppen](#top)
+
+
+
+
+
+
+## Steg 12: Lägg till S3 Bucket för att lagra webbplatsens filer
+
+I det här steget kommer vi att skapa en S3-bucket för att lagra webbplatsens filer, som kan inkludera HTML, CSS, JavaScript och andra tillgångar för kontaktformuläret.
+
+### Lägg till kod i `cloudformation.yaml`:
+
+```yaml
+Resources:
+  # Tidigare definierade resurser...
+
+  # S3 Bucket with a unique name including account ID, region, and stack name
+  ContactFormBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'contact-form-bucket-${AWS::AccountId}-${AWS::Region}-${AWS::StackName}'
+```
+
+### Förklaring:
+
+- **S3 Bucket**: Skapar en S3-bucket för att lagra webbplatsens filer.
+- **BucketName**: Namnet på bucketen genereras dynamiskt och inkluderar AWS-kontots ID, region och stackens namn för att säkerställa att bucketen får ett unikt namn.
+
+### Kör:
+
+1. Lägg till koden i din `cloudformation.yaml`-fil.
+2. Kör deploy-skriptet:
+
+   ```bash
+   ./deploy.sh
+   ```
+
+### Verifiera:
+
+1. Gå till **AWS Console** och navigera till **S3**.
+2. Kontrollera att en S3-bucket med namnet som definieras i koden har skapats.
+3. Verifiera att du kan ladda upp webbplatsens filer till denna bucket och att du kan komma åt dem via en URL om den är offentlig.
+
+[⬆️ Till toppen](#top)
+
+
+
+
+
+
+
+## Steg 13: Lägg till CloudFront Distribution framför S3-bucket
+
+I det här steget kommer vi att skapa en CloudFront-distribution för att leverera innehållet från S3-bucketen och säkerställa att åtkomst till innehållet är säker genom att använda Origin Access Control (OAC).
+
+### Lägg till kod i `cloudformation.yaml`:
+
+```yaml
+Resources:
+  # Tidigare definierade resurser...
+
+  # Origin Access Control (OAC) for CloudFront
+  ContactFormOAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: "ContactFormOAC"
+        SigningBehavior: "always"
+        SigningProtocol: "sigv4"
+        OriginAccessControlOriginType: "s3"
+
+  # CloudFront Distribution with S3 as origin using OAC
+  ContactFormCloudFront:
+    Type: AWS::CloudFront::Distribution
+    DependsOn: 
+      - ContactFormBucket
+      - InvokeHtmlUpload
+    Properties:
+      DistributionConfig:
+        Origins:
+          - Id: 'S3Origin'
+            DomainName: !GetAtt ContactFormBucket.DomainName
+            S3OriginConfig: {}
+            OriginAccessControlId: !Ref ContactFormOAC  # Link the OAC here
+        Enabled: true
+        DefaultRootObject: 'index.html'
+        DefaultCacheBehavior:
+          TargetOriginId: 'S3Origin'
+          ViewerProtocolPolicy: 'redirect-to-https'
+          AllowedMethods:
+            - 'GET'
+            - 'HEAD'
+          ForwardedValues:
+            QueryString: false
+            Cookies:
+              Forward: 'none'
+        PriceClass: 'PriceClass_100'
+        ViewerCertificate:
+          CloudFrontDefaultCertificate: true
+```
+
+### Förklaring:
+
+- **Origin Access Control (OAC)**: Skapar en Origin Access Control för att säkerställa att CloudFront kan hämta innehåll från S3 utan att exponera S3-bucketens URL direkt för användarna.
+- **CloudFront Distribution**: Skapar en CloudFront-distribution som använder S3-bucketen som ursprung för att leverera webbplatsens filer via en CDN, med HTTPS-skydd och cachebeteende.
+- **PriceClass**: Använder `PriceClass_100`, som är den mest kostnadseffektiva klassen och täcker de flesta regioner.
+
+### Kör:
+
+1. Lägg till koden i din `cloudformation.yaml`-fil.
+2. Kör deploy-skriptet:
+
+   ```bash
+   ./deploy.sh
+   ```
+
+### Verifiera:
+
+1. Gå till **AWS Console** och navigera till **CloudFront**.
+2. Kontrollera att en ny CloudFront-distribution har skapats och att den använder din S3-bucket som ursprung.
+3. Kontrollera att du kan komma åt webbplatsen via den genererade CloudFront-URL:en.
+
+[⬆️ Till toppen](#top)
+
+
+
+
+
+
+
+Här är ett exempel på hur du kan lägga till den här koden i din `cloudformation.yaml`-fil för att referera till tidigare definierade resurser:
+
+```yaml
+Resources:
+  # Tidigare definierade resurser...
+
+  # S3 Bucket Policy to allow access only from CloudFront
+  S3BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    DependsOn:
+      - ContactFormBucket
+      - ContactFormCloudFront
+    Properties:
+      Bucket: !Ref ContactFormBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowCloudFrontAccess
+            Effect: Allow
+            Principal:
+              Service: "cloudfront.amazonaws.com"
+            Action: "s3:GetObject"
+            Resource: !Sub "arn:aws:s3:::contact-form-bucket-${AWS::AccountId}-${AWS::Region}-${AWS::StackName}/*"
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${ContactFormCloudFront}"
+```
+
+### Förklaring:
+
+- **Tidigare definierade resurser**: Här kan du lägga till andra resurser som du har definierat tidigare i din `cloudformation.yaml`-fil, som till exempel S3-bucket, Lambda-funktioner, CloudFront-distributioner eller andra nödvändiga resurser.
+- **S3 Bucket Policy**: Den här policyresursen definierar rättigheter för åtkomst till S3-bucketen via CloudFront och begränsar åtkomsten till endast CloudFront-distributionen.
+
+När du implementerar detta i din CloudFormation-stack kommer resursen `S3BucketPolicy` att tillämpas för din S3-bucket och säkerställa att den endast är åtkomlig via CloudFront.
+
+[⬆️ Till toppen](#top)
