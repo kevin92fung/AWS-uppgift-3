@@ -1025,7 +1025,15 @@ Resources:
 
 
 
-Här är ett exempel på hur du kan lägga till den här koden i din `cloudformation.yaml`-fil för att referera till tidigare definierade resurser:
+
+
+
+
+## Steg 14: Lägg till rättigheter för S3-bucket
+
+I det här steget kommer vi att skapa en S3 Bucket Policy som endast tillåter åtkomst till S3-bucketen från CloudFront. Detta säkerställer att innehållet i S3-bucketen kan nås enbart via den distribuerade CloudFront-URL:en.
+
+### Lägg till kod i `cloudformation.yaml`:
 
 ```yaml
 Resources:
@@ -1055,9 +1063,856 @@ Resources:
 
 ### Förklaring:
 
-- **Tidigare definierade resurser**: Här kan du lägga till andra resurser som du har definierat tidigare i din `cloudformation.yaml`-fil, som till exempel S3-bucket, Lambda-funktioner, CloudFront-distributioner eller andra nödvändiga resurser.
-- **S3 Bucket Policy**: Den här policyresursen definierar rättigheter för åtkomst till S3-bucketen via CloudFront och begränsar åtkomsten till endast CloudFront-distributionen.
+- **S3 Bucket Policy**: Den här policyn gör att CloudFront kan komma åt objekt i S3-bucketen, men endast från den specifika CloudFront-distributionen som vi definierade tidigare.
+- **Policydocument**: Specifikt definieras att endast CloudFront-distributionen får hämta objekt från S3-bucketen genom att kontrollera `AWS:SourceArn` för CloudFront-distributionen.
 
-När du implementerar detta i din CloudFormation-stack kommer resursen `S3BucketPolicy` att tillämpas för din S3-bucket och säkerställa att den endast är åtkomlig via CloudFront.
+### Kör:
+
+1. Lägg till koden i din `cloudformation.yaml`-fil.
+2. Kör deploy-skriptet:
+
+   ```bash
+   ./deploy.sh
+   ```
+
+### Verifiera:
+
+1. Gå till **AWS Console** och navigera till **S3**.
+2. Kontrollera att rättigheten har applicerats på S3-bucketen och att den nu är åtkomlig endast via CloudFront-distributionen.
+
+Testet kan göras genom att försöka komma åt en fil från S3-bucketen direkt via URL, vilket inte ska vara tillåtet. Åtkomst ska endast vara möjlig via CloudFront-distributionen.
+
+[⬆️ Till toppen](#top)
+
+
+
+
+
+
+
+
+
+## Steg 15: Lägg till IAM-roll för Lambda att ladda upp till S3-bucket
+
+I det här steget skapar vi en IAM-roll som tillåter Lambda-funktionen att ladda upp filer till den skapade S3-bucketen. Denna roll ger nödvändiga rättigheter för att Lambda ska kunna skriva och hämta filer i S3.
+
+### Lägg till kod i `cloudformation.yaml`:
+
+```yaml
+Resources:
+  # Tidigare definierade resurser...
+
+  # IAM Role for Lambda Function to Access S3
+  LambdaS3UploadRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "LambdaS3UploadRole-${AWS::StackName}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: 
+                - lambda.amazonaws.com
+            Action: "sts:AssumeRole"
+      Policies:
+        - PolicyName: S3AccessPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "s3:PutObject"
+                  - "s3:PutObjectAcl"
+                  - "s3:GetObject"
+                Resource: 
+                  - !Sub "${ContactFormBucket.Arn}/*"
+```
+
+### Förklaring:
+- **IAM-roll**: Den här rollen ger Lambda-funktionen de nödvändiga rättigheterna för att läsa och skriva objekt i den angivna S3-bucketen.
+- **Policy**: Politiska åtgärder som tillåter `s3:PutObject`, `s3:PutObjectAcl` och `s3:GetObject`, vilket gör det möjligt för Lambda att ladda upp, hämta och sätta rättigheter på objekt i S3-bucketen.
+
+### Kör:
+1. Lägg till koden i din `cloudformation.yaml`-fil.
+2. Kör deploy-skriptet:
+
+   ```bash
+   ./deploy.sh
+   ```
+
+### Verifiera:
+1. Gå till **AWS Console** och navigera till **IAM**.
+2. Kontrollera att rollen **LambdaS3UploadRole** har skapats.
+3. Kontrollera att policyn är korrekt tillämpad och att Lambda-funktionen har behörighet att interagera med S3-bucketen.
+
+[⬆️ Till toppen](#top)
+
+
+
+
+
+
+
+
+
+## Steg 16: Lägg till Lambda-funktion för att ladda upp `index.html` till S3-bucket vid deploy
+
+I det här steget skapar vi en Lambda-funktion som laddar upp en `index.html`-fil till den skapade S3-bucketen. Funktionen triggas av en **Custom Resource** vid deploy, och ger en respons till CloudFormation när filen har laddats upp.
+
+### Lägg till kod i `cloudformation.yaml`:
+
+```yaml
+Resources:
+  # Tidigare definierade resurser...
+
+  # Lambda function to handle file upload with CloudFormation response
+  S3LambdaFunction:
+    Type: AWS::Lambda::Function
+    DependsOn:
+      - LambdaS3UploadRole
+      - ContactFormBucket
+      - ApiGatewayRestApi
+    Properties:
+      FunctionName: UploadHtmlFunction
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaS3UploadRole.Arn
+      Runtime: python3.13
+      Environment:
+        Variables:
+          BUCKET_NAME: !Ref ContactFormBucket
+          API_ID: !Ref ApiGatewayRestApi
+          API_REGION: !Ref "AWS::Region"
+          API_STAGE: "default"
+      Code:
+        ZipFile: |
+          import boto3
+          import os
+          import json
+          import urllib.request
+
+          s3_client = boto3.client('s3')
+
+          # Function to send a response to CloudFormation
+          def send_response(event, context, status, response_data):
+              response_url = event['ResponseURL']
+              response_body = json.dumps({
+                  'Status': status,
+                  'Reason': 'See the details in CloudWatch Log Stream: ' + context.log_stream_name,
+                  'PhysicalResourceId': context.log_stream_name,
+                  'StackId': event['StackId'],
+                  'RequestId': event['RequestId'],
+                  'LogicalResourceId': event['LogicalResourceId'],
+                  'Data': response_data
+              })
+
+              headers = {
+                  'content-type': '',
+                  'content-length': str(len(response_body))
+              }
+
+              try:
+                  request = urllib.request.Request(
+                      response_url,
+                      data=response_body.encode('utf-8'),
+                      headers=headers,
+                      method='PUT'
+                  )
+                  urllib.request.urlopen(request)
+                  print("Response sent to CloudFormation successfully.")
+              except Exception as e:
+                  print(f"Failed to send response: {e}")
+
+          # Lambda handler function
+          def lambda_handler(event, context):
+              print("Received event:", json.dumps(event))
+
+              # Define bucket name and file content
+              bucket_name = os.environ.get('BUCKET_NAME', 'default-bucket-name')
+              api_id = os.environ.get('API_ID', '')
+              api_region = os.environ.get('API_REGION', '')
+              api_stage = os.environ.get('API_STAGE', 'default')
+
+              # Construct the API endpoint URL
+              api_endpoint = f"https://{api_id}.execute-api.{api_region}.amazonaws.com/{api_stage}/AddContactInfo"
+              
+              html_content = f"""
+              <!DOCTYPE html>
+              <html>
+              <head>
+                  <title>Contact Form</title>
+                  <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/4.5.0/css/bootstrap.min.css">
+              </head>
+              <body>
+                  <div class="container">
+                      <h1>Contact Form</h1>
+                      <form id="contactForm" method="POST">
+                          <div class="form-group">
+                              <label for="name">Name:</label>
+                              <input type="text" class="form-control" id="name" name="name" required>
+                          </div>
+                          <div class="form-group">
+                              <label for="email">Email:</label>
+                              <input type="email" class="form-control" id="email" name="email" required>
+                          </div>
+                          <div class="form-group">
+                              <label for="msg">Message:</label>
+                              <textarea class="form-control" id="msg" name="msg" rows="4" cols="50" required></textarea>
+                          </div>
+                          <input type="submit" class="btn btn-primary" value="Submit">
+                      </form>
+                  </div>
+                  <script src="https://code.jquery.com/jquery-3.5.1.slim.min.js"></script>
+                  <script src="https://cdn.jsdelivr.net/npm/bootstrap@4.5.0/dist/js/bootstrap.min.js"></script>
+                  <script>
+                      const ApiUrl = "{api_endpoint}";
+                      document.getElementById("contactForm").addEventListener("submit", function(event) {{
+                          event.preventDefault();
+                          var formData = {{
+                              name: document.getElementById("name").value,
+                              email: document.getElementById("email").value,
+                              msg: document.getElementById("msg").value
+                          }};
+                          fetch(ApiUrl, {{
+                              method: "POST",
+                              body: JSON.stringify(formData)
+                          }})
+                          .then(response => {{
+                              if (response.ok) {{
+                                  alert("Form submitted successfully");
+                              }} else {{
+                                  alert("Form submission failed");
+                              }}
+                          }})
+                          .catch(error => {{
+                              console.error("An error occurred:", error);
+                          }});
+                      }});
+                  </script>
+              </body>
+              </html>
+              """
+
+              try:
+                  # Upload the HTML content to S3 bucket
+                  s3_client.put_object(
+                      Bucket=bucket_name,
+                      Key='index.html',
+                      Body=html_content,
+                      ContentType='text/html'
+                  )
+                  print(f"File uploaded successfully to {bucket_name}/index.html")
+
+                  # Send a success response to CloudFormation
+                  send_response(event, context, 'SUCCESS', {'Message': 'index.html uploaded successfully'})
+
+              except Exception as e:
+                  print(f"Error uploading file: {e}")
+                  # Send a failure response to CloudFormation
+                  send_response(event, context, 'FAILED', {'Message': str(e)})
+
+  # Custom resource to invoke Lambda function
+  InvokeHtmlUpload:
+    Type: AWS::CloudFormation::CustomResource
+    DependsOn:
+      - ContactFormBucket
+      - ApiGatewayRestApi
+    Properties:
+      ServiceToken: !GetAtt S3LambdaFunction.Arn
+
+  # Create a CodeStar connection to GitHub
+  GitHubConnection:
+    Type: AWS::CodeStarConnections::Connection
+    Properties:
+      ConnectionName: GitHubConnectionToMyRepo
+      ProviderType: GitHub
+```
+
+### Förklaring:
+- **Lambda-funktion**: Funktionen `S3LambdaFunction` laddar upp en HTML-fil till S3-bucketen `ContactFormBucket`. Den genererade HTML-filen innehåller ett kontaktformulär och en JavaScript-funktion som skickar formulärdata till API Gateway.
+- **Custom Resource**: Vi använder en Custom Resource för att trigga Lambda-funktionen vid deploy.
+- **API-länk**: Lambda-funktionen genererar en HTML-fil där API Gateway-endpointen inkluderas för att ta emot data från kontaktformuläret.
+
+### Kör:
+1. Lägg till koden i din `cloudformation.yaml`-fil.
+2. Kör deploy-skriptet:
+
+   ```bash
+   ./deploy.sh
+   ```
+
+### Verifiera:
+1. Gå till **AWS Console** och navigera till **Lambda**.
+2. Kontrollera att Lambda-funktionen har skapats och körts korrekt.
+3. Gå till **S3** och kontrollera att filen `index.html` har laddats upp till rätt bucket.
+4. Testa att webbsidan fungerar och att formulärdata kan skickas via API Gateway.
+
+[⬆️ Till toppen](#top)
+
+
+
+
+
+
+
+## Steg 17: Lägg till S3-bucket för CodePipeline artefakter
+
+I det här steget skapar vi en S3-bucket som ska användas för att lagra artefakter från CodePipeline. Denna bucket kommer att innehålla koden och alla filer som används för att distribuera applikationen.
+
+### Lägg till kod i `cloudformation.yaml`:
+
+```yaml
+Resources:
+  # Tidigare definierade resurser...
+
+  # Create an S3 bucket for storing artifacts
+  MyArtifactBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'artifact-bucket-${AWS::AccountId}-${AWS::Region}-${AWS::StackName}'
+```
+
+### Förklaring:
+- **S3 Bucket för artefakter**: Den nya bucket `MyArtifactBucket` används för att lagra artefakter från CodePipeline. Namnet på bucketen genereras dynamiskt baserat på kontoinformation, region och stack-namn för att säkerställa att det är unikt.
+
+### Kör:
+1. Lägg till koden i din `cloudformation.yaml`-fil.
+2. Kör deploy-skriptet:
+
+   ```bash
+   ./deploy.sh
+   ```
+
+### Verifiera:
+1. Gå till **AWS Console** och navigera till **S3**.
+2. Kontrollera att en ny bucket med namnet `artifact-bucket-<AccountId>-<Region>-<StackName>` har skapats.
+3. Verifiera att artefakter lagras korrekt i denna bucket när CodePipeline körs.
+
+[⬆️ Till toppen](#top)
+
+
+
+
+
+
+
+## Steg 18: Lägg till IAM Roll för Lambda och CodePipeline
+
+I det här steget skapar vi en IAM-roll som både **Lambda** och **CodePipeline** kommer att använda för att få nödvändiga rättigheter för att interagera med olika resurser som S3, GitHub, CloudWatch, och CloudFront.
+
+### Lägg till kod i `cloudformation.yaml`:
+
+```yaml
+Resources:
+  # Tidigare definierade resurser...
+
+  # Combined IAM Role for CodePipeline and Lambda (using the name CodePipelineRole)
+  CodePipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - codepipeline.amazonaws.com
+                - codebuild.amazonaws.com
+                - lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CombinedCodePipelinePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # Permissions for CodePipeline to interact with S3 and GitHub
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:GetBucketVersioning
+                  - s3:PutBucketAcl
+                  - codestar-connections:UseConnection
+                Resource:
+                  - !GetAtt MyArtifactBucket.Arn
+                  - !Sub "${MyArtifactBucket.Arn}/*"
+                  - !Sub "${ContactFormBucket.Arn}/*"
+                  - !Ref GitHubConnection  # GitHub connection resource
+
+              # Permissions for CodePipeline to create CloudWatch log groups, log streams, and log events
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
+
+              # Permissions to allow CodePipeline to pass IAM roles
+              - Effect: Allow
+                Action: iam:PassRole
+                Resource: '*'  # Allow passing any IAM role (can be restricted to specific roles)
+
+              # Permissions for Lambda to invoke CloudFront invalidation
+              - Effect: Allow
+                Action:
+                  - cloudfront:CreateInvalidation
+                  - lambda:InvokeFunction
+                Resource: "*"  # Adjust to a specific CloudFront distribution ARN if possible
+
+              # **New Permissions for CodePipeline Job Status Update**
+              - Effect: Allow
+                Action:
+                  - codepipeline:PutJobSuccessResult
+                  - codepipeline:PutJobFailureResult
+                Resource: "*"  # Optionally, you can restrict this to specific pipelines if necessary
+```
+
+### Förklaring:
+- **CodePipelineRole**: Den här rollen tilldelas både **CodePipeline** och **Lambda** så att de kan utföra nödvändiga åtgärder, som att interagera med S3-buckets, GitHub, CloudWatch och CloudFront.
+- **Policy**: Den definierade policyn tillåter CodePipeline att arbeta med S3, GitHub, loggar och hantera IAM-roller samt Lambda-funktioner som att skapa CloudFront-invalideringar.
+
+### Kör:
+1. Lägg till koden i din `cloudformation.yaml`-fil.
+2. Kör deploy-skriptet:
+
+   ```bash
+   ./deploy.sh
+   ```
+
+### Verifiera:
+1. Gå till **AWS Console** och navigera till **IAM > Roles**.
+2. Kontrollera att rollen `CodePipelineRole` har skapats och att den har tilldelats rätt policyer.
+3. Kontrollera att **CodePipeline** och **Lambda** har rättigheter att interagera med de definierade resurserna.
+
+[⬆️ Till toppen](#top)
+
+
+
+
+
+
+
+## Steg 19: Lägg till Lambda Funktion för CloudFront Invalidering
+
+I det här steget skapar vi en Lambda-funktion som kommer att användas för att skapa en CloudFront-invalidering. När en uppdatering görs genom CodePipeline, kommer denna Lambda-funktion att invalidiera CloudFront-cachen för att säkerställa att användarna får den senaste versionen av resurserna.
+
+### Lägg till kod i `cloudformation.yaml`:
+
+```yaml
+Resources:
+  # Tidigare definierade resurser...
+
+  # Lambda Function for CloudFront Invalidation
+  CloudFrontInvalidationFunction:
+    Type: AWS::Lambda::Function
+    DependsOn:
+      - CodePipelineRole  # Ensure the CodePipelineRole is created first
+      - ContactFormCloudFront
+    Properties:
+      FunctionName: CloudFrontInvalidationFunction
+      Handler: index.lambda_handler
+      Runtime: python3.9
+      Role: !GetAtt CodePipelineRole.Arn  # Use CodePipelineRole here
+      Environment:
+        Variables:
+          DISTRIBUTION_ID: !Ref ContactFormCloudFront
+      Code:
+        ZipFile: |
+          import boto3
+          import os
+
+          cloudfront = boto3.client('cloudfront')
+          codepipeline = boto3.client('codepipeline')
+
+          def lambda_handler(event, context):
+              distribution_id = os.getenv('DISTRIBUTION_ID')
+              
+              # Extract jobId for the CodePipeline action
+              job_id = event['CodePipeline.job']['id']
+              
+              try:
+                  # Create CloudFront invalidation
+                  response = cloudfront.create_invalidation(
+                      DistributionId=distribution_id,
+                      InvalidationBatch={
+                          'Paths': {
+                              'Quantity': 1,
+                              'Items': ['/*']
+                          },
+                          'CallerReference': str(context.aws_request_id)
+                      }
+                  )
+                  
+                  print(f"Invalidation created: {response}")
+                  
+                  # Notify CodePipeline of successful completion
+                  codepipeline.put_job_success_result(jobId=job_id)
+                  
+                  return {
+                      'statusCode': 200,
+                      'body': {
+                          'status': 'Succeeded',
+                          'message': f"Invalidation created with ID: {response['Invalidation']['Id']}"
+                      }
+                  }
+              
+              except Exception as e:
+                  # Notify CodePipeline of failure
+                  print(f"Error: {str(e)}")
+                  codepipeline.put_job_failure_result(
+                      jobId=job_id,
+                      failureDetails={
+                          'message': str(e),
+                          'type': 'JobFailed'
+                      }
+                  )
+                  
+                  return {
+                      'statusCode': 500,
+                      'body': {
+                          'status': 'Failed',
+                          'message': f"Error during invalidation: {str(e)}"
+                      }
+                  }
+```
+
+### Förklaring:
+- **CloudFrontInvalidationFunction**: Denna Lambda-funktion ansvarar för att skapa en invalidation i CloudFront, vilket gör att cachen rensas och användare får den uppdaterade versionen av resursen.
+- **Environment Variables**: Miljövariabeln `DISTRIBUTION_ID` används för att ange CloudFront-distributionens ID som Lambda-funktionen kommer att invalidiera.
+- **CloudFront API**: Lambda-funktionen använder `cloudfront.create_invalidation()` för att skapa en invalidation på CloudFront.
+- **CodePipeline**: Lambda-funktionen interagerar med CodePipeline och rapporterar resultatet tillbaka (om invalidationen lyckas eller misslyckas).
+
+### Kör:
+1. Lägg till koden i din `cloudformation.yaml`-fil.
+2. Kör deploy-skriptet:
+
+   ```bash
+   ./deploy.sh
+   ```
+
+### Verifiera:
+1. Gå till **AWS Console** och navigera till **Lambda**.
+2. Kontrollera att Lambda-funktionen `CloudFrontInvalidationFunction` har skapats och att den har rätt miljövariabler och behörigheter.
+3. Testa genom att köra en pipeline och verifiera att invalidationen skapas på CloudFront.
+
+[⬆️ Till toppen](#top)
+
+
+
+
+
+
+
+## Steg 20: Lägg till CodePipeline
+
+I detta steg skapar vi en CodePipeline som automatiskt bygger och distribuerar applikationen. Pipeline kommer att innehålla tre huvudsakliga steg: **Source**, **Deploy**, och **InvalidateCache**. Vi kommer att använda GitHub som källan för koden, S3 för distributionen, och Lambda för att invalidiera CloudFront-cachen.
+
+### Lägg till kod i `cloudformation.yaml`:
+
+```yaml
+Resources:
+  # Tidigare definierade resurser...
+
+  # CodePipeline Resource
+  MyCodePipeline:
+    Type: AWS::CodePipeline::Pipeline
+    DependsOn:
+      - CodePipelineRole
+      - MyArtifactBucket
+      - GitHubConnection
+      - ContactFormBucket
+      - CloudFrontInvalidationFunction
+    Properties:
+      Name: MyPipeline
+      RoleArn: !GetAtt CodePipelineRole.Arn  # Use CodePipelineRole here
+
+      # Artifact store
+      ArtifactStore:
+        Type: S3
+        Location: !Ref MyArtifactBucket
+
+      # Pipeline stages (source, build, and deploy)
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: GitHubSource
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeStarSourceConnection
+                Version: 1
+              OutputArtifacts:
+                - Name: SourceOutput
+              Configuration:
+                ConnectionArn: !Ref GitHubConnection
+                FullRepositoryId: !Ref GitHubRepositoryId
+                BranchName: main
+
+        - Name: Deploy
+          Actions:
+            - Name: S3Deploy
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: S3
+                Version: 1
+              InputArtifacts:
+                - Name: SourceOutput
+              Configuration:
+                BucketName: !Ref ContactFormBucket
+                Extract: 'true'
+
+        - Name: InvalidateCache
+          Actions:
+            - Name: CloudFrontInvalidation
+              ActionTypeId:
+                Category: Invoke
+                Owner: AWS
+                Provider: Lambda
+                Version: 1
+              Configuration:
+                FunctionName: !Ref CloudFrontInvalidationFunction
+              RoleArn: !GetAtt CodePipelineRole.Arn  # Use CodePipelineRole here
+              RunOrder: 1
+              OutputArtifacts:  # Add this if you want to pass data between pipeline stages
+                - Name: InvalidationOutput
+```
+
+### Förklaring:
+
+- **Source**: Den här fasen hämtar koden från GitHub, med hjälp av en CodeStarSourceConnection.
+- **Deploy**: I denna fas laddas koden upp till S3-bucketen, där applikationen lagras och distribueras.
+- **InvalidateCache**: Denna fas triggar Lambda-funktionen som invalidierar CloudFront-cachen och säkerställer att den senaste versionen av webbplatsen är tillgänglig för användarna.
+- **ArtifactStore**: En S3-bucket används för att lagra artefakter mellan pipeline-stegen.
+
+### Uppdaterad `deploy.sh`:
+
+För att köra denna deployment måste vi också uppdatera vårt `deploy.sh`-skript så att det deployar CloudFormation-stack och tar hänsyn till de parametrar vi definierar i `.env`-filen.
+
+Här är den uppdaterade versionen av skriptet:
+
+```bash
+#!/bin/bash
+
+# Ladda miljövariabler från .env-filen
+source .env
+
+# Sätt variabler för CloudFormation-mallfilen och stacknamn
+TEMPLATE_FILE="CloudFormation.yaml"  # Ändra denna till din CloudFormation mallfilens väg
+STACK_NAME="uppgift3"  # Ändra detta till ditt stacknamn
+
+# Deploya CloudFormation stacken med de angivna miljövariablerna
+aws cloudformation deploy \
+  --template-file "$TEMPLATE_FILE" \
+  --stack-name "$STACK_NAME" \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --parameter-overrides \
+    FromEmail="$FROM_EMAIL" \
+    ToEmail="$TO_EMAIL" \
+    GitHubRepositoryId="$GITHUB_REPOSITORY_ID"
+```
+
+### Förklaring:
+
+- **`source .env`**: Detta kommando laddar miljövariabler från en `.env`-fil. Se till att du har denna fil med rätt variabler (som `FROM_EMAIL`, `TO_EMAIL`, `GITHUB_REPOSITORY_ID`, etc.) definierade i din arbetskatalog.
+  
+- **CloudFormation deployment**:
+  - **`aws cloudformation deploy`**: Detta kommando deployar din CloudFormation-stack, vilket skapar eller uppdaterar resurser baserade på `CloudFormation.yaml`.
+  - **`--capabilities CAPABILITY_NAMED_IAM`**: Denna flagga krävs om du skapar IAM-roller eller andra IAM-resurser.
+  - **`--parameter-overrides`**: Här anger du parametrarna som används av CloudFormation-mallen, inklusive t.ex. e-postadresser och GitHub-repository-ID.
+
+### Se till att `.env`-filen innehåller:
+
+```bash
+FROM_EMAIL="din-email@domain.com"
+TO_EMAIL="mottagar-email@domain.com"
+GITHUB_REPOSITORY_ID="användarnamn/repository"
+```
+
+När du har gjort dessa uppdateringar och sparat `.env`-filen, kan du köra skriptet för att deploya din CloudFormation-stack:
+
+```bash
+./deploy.sh
+```
+
+### Verifiering:
+
+1. När deployment är klar, gå till **AWS Console** och navigera till **CodePipeline**.
+2. Kontrollera att pipeline `MyPipeline` har skapats och att alla steg finns där (Source, Deploy, InvalidateCache).
+3. Starta en pipeline-körning och verifiera att koden distribueras korrekt till S3 och att CloudFront-invalideringen sker.
+4. Kontrollera **CloudWatch Logs** för att verifiera att Lambda-funktionen körs korrekt under invalidationssteget.
+
+[⬆️ Till toppen](#top)
+
+
+
+
+
+
+
+
+## Steg 21: Slutför autentisering av GitHub Connect via AWS Console
+
+För att slutföra autentiseringen och verifiera GitHub-anslutningen, följ dessa steg:
+
+### Steg-för-steg guide:
+
+1. **Öppna Developer Tools i AWS Console**:
+   - Gå till **AWS Management Console**.
+   - I sökfältet, skriv **Developer Tools** och välj det från listan.
+
+2. **Navigera till GitHub Connections**:
+   - Under **Settings** (inställningar), välj **Connections**.
+   - Här ska du se den GitHub-anslutning som skapades via CloudFormation.
+
+3. **Verifiera GitHub-anslutningen**:
+   - Klicka på den skapade GitHub-anslutningen.
+   - Ett popup-fönster kommer att öppnas i AWS där du får verifiera anslutningen.
+   - Detta popup-fönster kommer att omdirigera dig till GitHub för att ge AWS åtkomst till ditt GitHub-konto.
+
+4. **Godkänn åtkomst och välj repository**:
+   - När du omdirigeras till GitHub, logga in om du inte redan är inloggad.
+   - Ge AWS tillgång till ditt GitHub-konto genom att godkänna åtkomstbegäran.
+   - Välj rätt repository som ska användas för din pipeline och klicka på **Authorize**.
+
+### Efter verifiering:
+När GitHub-anslutningen har verifierats och slutförts, kommer AWS att ha åtkomst till det valda repositoryt, och du kan använda det i din pipeline-konfiguration.
+
+[⬆️ Till toppen](#top)
+
+
+
+
+
+
+
+
+
+## Steg 22: Ladda upp index.html till GitHub Repository från S3
+
+För att lägga till en ny `index.html`-fil till ditt GitHub-repository, följ dessa steg:
+
+### Steg-för-steg guide:
+
+1. **Hämta index.html från S3**:
+   - Gå till **AWS Management Console** och öppna **S3**.
+   - Leta upp den S3-bucket där `index.html` ska finnas (t.ex., `ContactFormBucket`).
+   - Klicka på filen `index.html` (om den inte finns, skapa en fil och ladda upp den).
+   - Om du redan har filen, ladda ner den genom att klicka på **Download**.
+
+2. **Öppna GitHub Repository**:
+   - Gå till **GitHub** och logga in på ditt konto.
+   - Navigera till det repository där du vill ladda upp filen.
+   - Om du inte redan har en lokal kopia av repositoryt, klona det till din dator:
+     ```bash
+     git clone https://github.com/username/repository-name.git
+     ```
+     Byt ut `username` och `repository-name` med det aktuella namnet på din GitHub-användare och repository.
+
+3. **Lägg till index.html till ditt GitHub Repository**:
+   - Kopiera den nedladdade `index.html`-filen till din lokala kopia av repositoryt.
+   - Gå till din terminal eller kommandoprompt och kör följande kommandon:
+     ```bash
+     cd /path/to/your/repository
+     git add index.html
+     git commit -m "Add index.html"
+     git push origin main
+     ```
+
+4. **Verifiera ändringar på GitHub**:
+   - Gå tillbaka till GitHub och bekräfta att `index.html` nu finns i repositoryt.
+   - Den nya filen kommer nu att vara en del av repositoryt och kan användas för vidare deployment eller integrationer.
+
+Efter att ha slutfört dessa steg, har `index.html` nu lagts till i ditt GitHub-repository och kan användas för framtida deployment eller pipeline-konfiguration.
+
+[⬆️ Till toppen](#top)
+
+
+
+
+
+
+
+
+## Steg 23: Pusha en förändring av `index.html`, verifiera att pipeline kör och testa CloudFront invalidation
+
+Följ dessa steg för att pusha en förändring till `index.html`, kontrollera att din pipeline körs och verifiera att CloudFront-invalidationen har genomförts.
+
+### Steg-för-steg guide:
+
+1. **Ändra `index.html`-filen**:
+   - Öppna din lokala kopia av GitHub-repositoryt.
+   - Gör den önskade ändringen i filen `index.html` (t.ex., ändra texten, lägga till en ny sektion eller uppdatera innehåll).
+
+2. **Pusha ändringen till GitHub**:
+   - När du har gjort dina ändringar, spara filen och öppna terminalen.
+   - Kör följande kommandon för att lägga till, commita och pusha ändringarna till ditt GitHub-repository:
+     ```bash
+     git add index.html
+     git commit -m "Update index.html with new changes"
+     git push origin main
+     ```
+
+3. **Verifiera att CodePipeline kör**:
+   - Gå till **AWS Management Console** och öppna **CodePipeline**.
+   - Leta upp din pipeline (t.ex., `MyPipeline`).
+   - Verifiera att en ny pipeline-exekvering har startat efter din push till GitHub.
+     - Om pipeline inte startar automatiskt, kontrollera om GitHub-kopplingen är korrekt och om den är konfigurerad för att trigga vid varje push till repositoryt.
+   - Under fliken **Stages** kan du se status för varje steg (Source, Deploy, etc.).
+   - Om ett steg misslyckas, klicka på det för att få mer detaljer om vad som kan ha gått fel.
+
+4. **Verifiera att CloudFront-invalidation har körts**:
+   - När pipeline-exekveringen är klar, gå till **AWS Management Console** och öppna **CloudFront**.
+   - Leta upp din CloudFront-distribution (t.ex., `ContactFormCloudFront`).
+   - Under fliken **Invalidations**, kontrollera om en invalidation har skapats efter deployment.
+   - Om invalidationen har körts korrekt, kommer statusen att vara "Completed" för den senaste invalidationen.
+
+5. **Testa den uppdaterade sidan**:
+   - Gå till den URL som är kopplad till din CloudFront-distribution.
+   - Verifiera att ändringarna i `index.html` syns på webbplatsen.
+     - Om sidan inte uppdateras direkt, vänta några minuter för att ge CloudFront cache att uppdateras.
+     - Rensa din webbläsares cache eller använd inkognitoläge för att testa ändringarna.
+
+Efter att ha följt dessa steg ska din förändring av `index.html` ha pushats till GitHub, pipeline köras korrekt och CloudFront-invalidationen ha genomförts. Du kan nu testa den uppdaterade sidan för att säkerställa att allt fungerar som förväntat.
+
+[⬆️ Till toppen](#top)
+
+
+
+
+
+
+
+## Steg 24: Rensa upp och ta bort CloudFormation-resurser
+
+För att säkerställa att du inte betalar för onödiga AWS-resurser, följer du dessa steg för att ta bort CloudFormation-stacken och rensa alla relaterade resurser:
+
+### Steg-för-steg guide:
+
+1. **Töm S3-buckets**:
+   - Gå till **AWS S3** i Management Console.
+   - Öppna de S3-buckets som skapades av CloudFormation (t.ex., `MyArtifactBucket`, `ContactFormBucket`).
+   - Ta bort alla filer som finns i dessa buckets.
+     - Välj alla objekt i bucketen och välj **Delete**.
+     - Bekräfta att du vill ta bort objekten.
+
+2. **Ta bort CloudFormation-stacken**:
+   - Gå till **AWS CloudFormation** i Management Console.
+   - Leta upp den stack du skapade (t.ex., `MyStack` eller den stack du använde för att skapa din miljö).
+   - Välj stacken och klicka på **Delete** för att ta bort alla resurser som är kopplade till den.
+     - När du tar bort stacken kommer alla resurser (t.ex., S3-buckets, IAM-roller, Lambda-funktioner, CodePipeline) som skapades av CloudFormation att tas bort automatiskt.
+
+3. **Verifiera att alla resurser har tagits bort**:
+   - Gå igenom de olika AWS-tjänsterna som du använde för din lösning och verifiera att alla relaterade resurser har tagits bort.
+     - **S3**: Se till att alla buckets är tomma eller borttagna.
+     - **IAM**: Kontrollera att eventuella IAM-roller eller policies som skapades av CloudFormation inte längre finns.
+     - **Lambda**: Kontrollera att Lambda-funktionerna inte finns kvar.
+     - **CloudFront**: Kontrollera att din CloudFront-distribution har tagits bort om den inte längre behövs.
+     - **CodePipeline**: Se till att inga pipelines eller relaterade artefakter finns kvar.
+
+4. **Rensa upp eventuella andra resurser**:
+   - Om du har andra resurser som skapades manuellt (t.ex., GitHub-kopplingar, API Gateway), ta bort dessa också för att undvika extra kostnader.
+
+Genom att följa dessa steg ser du till att alla resurser som skapades för projektet tas bort och att du slipper onödiga kostnader för AWS-tjänster.
 
 [⬆️ Till toppen](#top)
