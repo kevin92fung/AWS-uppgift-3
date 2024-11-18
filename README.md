@@ -23,6 +23,36 @@ För att kunna genomföra detta projekt behöver du:
 
 
 
+## Innehållsförteckning
+
+1. [**Steg 1**: Skapa GitHub Repository](#steg-1-skapa-github-repository)
+2. [**Steg 2**: Skapa `.env`-fil](#steg-2-skapa-env-fil)
+3. [**Steg 3**: Skapa CloudFormation-mall](#steg-3-skapa-cloudformation-mall)
+4. [**Steg 4**: Skapa Deploy-skript](#steg-4-skapa-deploy-skript)
+5. [**Steg 5**: Lägg till DynamoDB-tabell i `cloudformation.yaml`](#steg-5-lägg-till-dynamodb-tabell-i-cloudformationyaml)
+6. [**Steg 6**: Lägg till IAM-roller i cloudformation.yaml](#steg-6-lägg-till-iam-roller-i-cloudformationyaml)
+7. [**Steg 7**: Lägg till e-post för SES](#steg-7-lägg-till-e-post-för-ses)
+8. [**Steg 8**: Lägg till Lambda-funktion för att bearbeta kontaktformulär](#steg-8-lägg-till-lambda-funktion-för-att-bearbeta-kontaktformulär)
+9. [**Steg 9**: Lägg till trigger för Lambda-funktion via API Gateway](#steg-9-lägg-till-trigger-för-lambda-funktion-via-api-gateway)
+10. [**Steg 10**: Lägg till Lambda-funktion för att skicka e-postmeddelande med kontaktinformation](#steg-10-lägg-till-lambda-funktion-för-att-skicka-e-postmeddelande-med-kontaktinformation)
+11. [**Steg 11**: Lägg till trigger för SES-funktionen](#steg-11-lägg-till-trigger-för-ses-funktionen)
+12. [**Steg 12**: Lägg till S3 Bucket för att lagra webbplatsens filer](#steg-12-lägg-till-s3-bucket-för-att-lagra-webbplatsens-filer)
+13. [**Steg 13**: Lägg till CloudFront Distribution framför S3-bucket](#steg-13-lägg-till-cloudfront-distribution-framför-s3-bucket)
+14. [**Steg 14**: Lägg till rättigheter för S3-bucket](#steg-14-lägg-till-rättigheter-för-s3-bucket)
+15. [**Steg 15**: Lägg till IAM-roll för Lambda att ladda upp till S3-bucket](#steg-15-lägg-till-iam-roll-för-lambda-att-ladda-upp-till-s3-bucket)
+16. [**Steg 16**: Lägg till Lambda-funktion för att ladda upp `index.html` till S3-bucket vid deploy](#steg-16-lägg-till-lambda-funktion-för-att-ladda-upp-indexhtml-till-s3-bucket-vid-deploy)
+17. [**Steg 17**: Lägg till S3-bucket för CodePipeline artefakter](#steg-17-lägg-till-s3-bucket-för-codepipeline-artefakter)
+18. [**Steg 18**: Lägg till IAM Roll för Lambda och CodePipeline](#steg-18-lägg-till-iam-roll-för-lambda-och-codepipeline)
+19. [**Steg 19**: Lägg till Lambda Funktion för CloudFront Invalidering](#steg-19-lägg-till-lambda-funktion-för-cloudfront-invalidering)
+20. [**Steg 20**: Lägg till CodePipeline](#steg-20-lägg-till-codepipeline)
+21. [**Steg 21**: Slutför autentisering av GitHub Connect via AWS Console](#steg-21-slutför-autentisering-av-github-connect-via-aws-console)
+22. [**Steg 22**: Ladda upp index.html till GitHub Repository från S3](#steg-22-ladda-upp-indexhtml-till-github-repository-från-s3)
+23. [**Steg 23**: Pusha en förändring av `index.html`, verifiera att pipeline kör och testa CloudFront invalidation](#steg-23-pusha-en-förändring-av-indexhtml-verifiera-att-pipeline-kör-och-testa-cloudfront-invalidation)
+24. [**Steg 24**: Rensa upp och ta bort CloudFormation-resurser](#steg-24-rensa-upp-och-ta-bort-cloudformation-resurser)
+
+
+
+
 
 
 
