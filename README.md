@@ -1,15 +1,43 @@
-# Skapa och deploya projekt med Git och `.env`-fil
+# AWS Uppgift 3
 
-Följ dessa steg för att skapa och deploya ditt projekt.
+Denna CloudFormation-mall provisionerar en **serverlös miljö** för ett kontaktformulär som skickar **bekräftelsemail** till den ansvarige personen.
 
-### 1. Skapa en `.env`-fil
-För att skapa en `.env`-fil som innehåller de angivna miljövariablerna, öppna en terminal och kör följande kommando för att skapa filen:
+Webbplatsen är hostad på en **S3-bucket** och nås av användare genom **CloudFront**.
+
+Lösningen använder flera **Lambda-funktioner** för backend-bearbetning, med **GitHub-integration** och **CodePipeline** för att hantera uppdateringar av webbplatsen.
+
+
+## Förutsättningar
+
+För att kunna genomföra detta projekt behöver du:
+
+- Ett konto på [AWS](https://aws.amazon.com/) för att använda tjänster som Lambda, S3, DynamoDB, och CodePipeline.
+- Ett konto på [GitHub](https://github.com/) för att hantera kodversionering och automatiserad deployment.
+- Två e-postadresser: en för att skicka bekräftelsemail och en för den ansvarige att ta emot meddelanden via SES.
+- [Visual Studio Code (VSCode)](https://code.visualstudio.com/) rekommenderas för att redigera och utveckla projektet, med stöd för olika AWS- och GitHub-verktyg.
+
+## Steg 1: Skapa GitHub Repository
+1. Gå till [GitHub](https://github.com/) och logga in.
+2. Klicka på knappen **New** i övre högra hörnet för att skapa ett nytt repository.
+3. Ge repositoryt ett namn (t.ex. `aws-contact-form`) och välj om det ska vara publikt eller privat.
+4. Klicka på **Create repository** för att slutföra.
+
+## Steg 2: Skapa `.env`-fil
+1. Gå till din hemkatalog och skapa en ny katalog för projektet:
+
+```bash
+cd ~
+mkdir serverless
+cd serverless
+```
+
+2. Skapa `.env`-filen i den nya katalogen:
 
 ```bash
 touch .env
 ```
 
-Öppna sedan `.env`-filen i din favorittextredigerare och lägg till följande innehåll:
+3. Lägg sedan till följande innehåll i `.env`-filen, där du ersätter platshållarna `<mail@example.com>`, `<mail@example2.com>`, och `<username/repository>` med dina faktiska värden:
 
 ```env
 # Email Configuration Parameters
@@ -20,31 +48,28 @@ TO_EMAIL=<mail@example2.com>
 GITHUB_REPOSITORY_ID=<username/repository>
 ```
 
-Spara och stäng filen.
 
-### 2. Pull Git-repository
-För att hämta det senaste innehållet från ditt GitHub-repository, använd följande kommando:
-
-```bash
-git pull https://github.com/kevin92fung/aws-uppgift-3.git
-```
-
-Detta hämtar koden från GitHub-repositoryt `aws-uppgift-3` till din lokala maskin.
-
-### 3. Navigera till rätt katalog
-När du har klonat eller hämtat repositoryt, navigera till den katalog som innehåller projektet genom att köra:
+## Steg 3: Skapa `cloudformation.yaml`
+Öppna terminalen och skapa en ny fil med följande kommando:
 
 ```bash
-cd path/to/your/project
+touch cloudformation.yaml
 ```
 
-Ersätt `path/to/your/project` med den faktiska sökvägen till katalogen där projektet är placerat.
+Lägg sedan till följande grundläggande struktur i filen:
 
-### 4. Deploya med deploy-skriptet
-När du är i rätt katalog, kör deploy-skriptet för att starta deploymenten:
+```yaml
+AWSTemplateFormatVersion: 2010-09-09
+Description: |
+  Denna CloudFormation-mall provisionerar en **serverlös miljö** för ett kontaktformulär 
+  som skickar **bekräftelsemail** till den ansvarige personen.
+  
+  Webbplatsen är hostad på en **S3-bucket** och nås av användare genom **CloudFront**.
+  
+  Lösningen använder flera **Lambda-funktioner** för backend-bearbetning, med 
+  **GitHub-integration** och **CodePipeline** för att hantera uppdateringar av webbplatsen.
 
-```bash
-./deploy
+Resources:
+  # Här kommer dina AWS-resurser att definieras, exempelvis S3-bucket, Lambda, API Gateway, osv.
+
 ```
-
-Detta skript kommer att köra de nödvändiga kommandona för att deploya ditt projekt.
